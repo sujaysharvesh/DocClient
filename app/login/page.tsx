@@ -1,14 +1,13 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { FileText, Eye, EyeOff, Github, Mail } from "lucide-react"
+import { FileText, Eye, EyeOff, Mail } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 
@@ -17,43 +16,76 @@ export default function LoginPage() {
   const [password, setPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
 
-  const [error, setError] = useState<String | null>(null)
-
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
+  const getCsrfToken = async (): Promise<string> => {
+    try {
+      const response = await fetch(`/api/v1/auth/csrf`, {
+        method: "GET",
+        credentials: "include", // Important: include cookies
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log("CSRF response:", data)
+        return data.Token?.token || ""
+      } else {
+        console.info("Failed to get CSRF token:", response.status)
+        return ""
+      }
+    } catch (err) {
+      console.error("Error getting CSRF token:", err)
+      return ""
+    }
+  }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
+    setError(null)
 
-    const csrfToken = await fetch(`${baseUrl}/api/v1/auth/csrf`, {
-      credentials: "include",
-    })
+    try {
+      const csrfToken = await getCsrfToken()
+      console.log("CSRF Token:", csrfToken)
 
-    const { token } = await csrfToken.json();
+      const response = await fetch(`/api/v1/auth/login`, {
+        method: "POST",
+        credentials: "include", 
+        headers: {
+          "Content-Type": "application/json",
+          ...(csrfToken && { "X-XSRF-TOKEN": csrfToken })
+        },
+        body: JSON.stringify({ email, password }),
+      })
 
-    const response = await fetch(`${baseUrl}/api/v1/auth/login`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password }),
-    })
+      console.log("Login response status:", response.status)
+      console.log("Response headers:", Object.fromEntries(response.headers))
+      
+      const result = await response.json()
+      console.log("Login response:", result)
 
-    const data = await response.json()
-
-    if (!response.ok) {
-      setError(data.message)
+      if (response.ok) {
+        console.log("Login successful, redirecting to editor")
+        router.push("/editor")
+      } else {
+        // Fixed: use result instead of undefined 'data'
+        setError(result.message || "Login failed")
+      }
+    } catch (err) {
+      console.error("Login error:", err)
+      setError("Network error occurred")
+    } finally {
+      setIsLoading(false)
     }
-
-    router.push("/editor")
-    setIsLoading(false)
   }
 
   const handleSocialLogin = (provider: string) => {
     console.log(`Login with ${provider}`)
-    // Simulate social login
+    // Implement actual social login here
     setTimeout(() => {
       router.push("/")
     }, 1000)
@@ -69,12 +101,13 @@ export default function LoginPage() {
             <span className="text-2xl font-bold">DocuFlow</span>
           </Link>
         </div>
+
         {/* Error message display */}
-          {error && (
-            <div className="text-red-500 text-sm p-2 rounded bg-red-50 mb-4">
-              {error}
-            </div>
-          )}
+        {error && (
+          <div className="text-red-500 text-sm p-2 rounded bg-red-50 mb-4">
+            {error}
+          </div>
+        )}
 
         <Card>
           <CardHeader>
@@ -88,7 +121,6 @@ export default function LoginPage() {
                 <Mail className="h-4 w-4 mr-2" />
                 Google
               </Button>
-
             </div>
 
             <div className="relative">

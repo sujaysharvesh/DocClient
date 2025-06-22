@@ -11,6 +11,10 @@ import { FileText, Plus } from "lucide-react"
 import { DownloadModal } from "@/components/download-modal"
 import { AIGenerateModal } from "@/components/ai-generate-modal"
 import { Sparkles } from "lucide-react"
+import * as dotenv from "dotenv"
+import { daysInWeek } from "date-fns/constants"
+import { error } from "console"
+import axios from "axios";
 
 interface User {
   id: string
@@ -27,6 +31,50 @@ interface Document {
   lastModified: string
 }
 
+interface ApiResponse<T> {
+  success: boolean
+  meessage: string
+  data: T
+  timestamp: string
+  error: string;
+}
+
+interface UserData {
+  id: string
+  username: string
+  email: string
+}
+
+const getRandomColor = (): string => {
+  const colors = [
+    "#ef4444", 
+    "#f97316", 
+    "#eab308", 
+    "#22c55e", 
+    "#06b6d4", 
+    "#3b82f6", 
+    "#8b5cf6", 
+    "#ec4899", 
+    "#10b981", 
+    "#f59e0b", 
+    "#6366f1", 
+    "#84cc16", 
+  ]
+  return colors[Math.floor(Math.random() * colors.length)]
+} 
+
+const getInitials = (name: string): string => {
+  if (!name) return "";
+  return name
+    .split(' ')
+    .map(word => word[0])
+    .join('')
+    .toUpperCase()
+    .substring(0, 2)
+}
+
+
+
 export default function EditorPage() {
   const [currentDocument, setCurrentDocument] = useState<string | null>(null)
   const [documents, setDocuments] = useState<Document[]>([])
@@ -36,34 +84,111 @@ export default function EditorPage() {
   const [aiGenerateModalOpen, setAIGenerateModalOpen] = useState(false)
   const [newDocTitle, setNewDocTitle] = useState("")
   const [currentDocumentContent, setCurrentDocumentContent] = useState("")
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [activeUsers, setActiveUsers] = useState<User[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [authError, setAuthError] = useState<string | null>(null)
 
-  // Mock current user
-  const currentUser: User = {
-    id: "user-1",
-    name: "You",
-    color: "#3b82f6",
-    avatar: "Y",
-    isOwner: true,
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL
+
+  const getCsrfToken = async (): Promise<string> => {
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/auth/csrf`, {
+        method: "GET",
+        credentials: "include"
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log(data.Token.token)
+        return data.Token.token || ""
+      } else {
+        console.warn("Failed to get CSRF token:", response.status)
+        return ""
+      }
+    } catch (err) {
+      console.error("Error getting CSRF token:", err)
+      return ""
+    }
   }
+  
+  const fetchCurrentUser = async (): Promise<User | null> => {
+  try {
+    const csrfToken = await getCsrfToken();
+
+    const response = await axios.get<ApiResponse<UserData>>(`${baseUrl}/api/v1/auth/me`, {
+      headers: {
+        "Content-Type": "application/json",
+        "X-XSRF-TOKEN": csrfToken
+      },
+      withCredentials: true // ✅ This is how Axios sends cookies
+    });
+
+    const apiResponse = response.data;
+    const userData = apiResponse.data;
+
+    const user: User = {
+      id: userData.id,
+      name: userData.username,
+      color: getRandomColor(),
+      avatar: getInitials(userData.username),
+      isOwner: true,
+      lastSeen: "Active Now"
+    };
+
+    console.log("Fetched user:", user);
+    return user;
+
+  } catch (err: any) {
+    if (err.response?.status === 401) {
+      setAuthError("Please log in to continue");
+    } else if (err.response?.status === 403) {
+      setAuthError("Access forbidden. Please check your permissions.");
+    } else {
+      setAuthError("Authentication failed");
+    }
+
+    console.error("Authentication error:", err);
+    return null;
+  }
+};
+
 
   // Mock active users
-  const [activeUsers, setActiveUsers] = useState<User[]>([
-    currentUser,
-    {
-      id: "user-2",
-      name: "Alice Johnson",
-      color: "#ef4444",
-      avatar: "A",
-      lastSeen: "Active now",
-    },
-    {
-      id: "user-3",
-      name: "Bob Smith",
-      color: "#10b981",
-      avatar: "B",
-      lastSeen: "2 minutes ago",
-    },
-  ])
+  useEffect(() => {
+    const initializeUser = async () => {
+      setLoading(true)
+      const user = await fetchCurrentUser()
+      
+      if (user) {
+        setCurrentUser(user)
+        
+        // Mock additional active users
+        const mockUsers: User[] = [
+          user, // Current user
+          {
+            id: "user-2",
+            name: "Alice Johnson",
+            color: getRandomColor(),
+            avatar: getInitials("Alice Johnson"),
+            lastSeen: "Active now",
+          },
+          {
+            id: "user-3",
+            name: "Bob Smith",
+            color: getRandomColor(),
+            avatar: getInitials("Bob Smith"),
+            lastSeen: "2 minutes ago",
+          },
+        ]
+        
+        setActiveUsers(mockUsers)
+      }
+      setLoading(false)
+    }
+
+    initializeUser()
+  }, [])
 
   // Load documents from localStorage
   useEffect(() => {
@@ -113,13 +238,29 @@ export default function EditorPage() {
     }
   }
 
+  
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+
   if (!currentDocument) {
     return (
       <div className="min-h-screen bg-background p-6">
         <div className="max-w-4xl mx-auto">
           <div className="mb-8">
             <h1 className="text-3xl font-bold mb-2">Collaborative Document Editor</h1>
-            <p className="text-muted-foreground">Create and edit documents with real-time collaboration</p>
+            <p className="text-muted-foreground">
+                Welcome, {currentUser?.name}! Create and edit documents with real-time collaboration
+            </p>
           </div>
 
           {/* Create new document */}
@@ -253,7 +394,7 @@ export default function EditorPage() {
           isOpen={usersModalOpen}
           onClose={() => setUsersModalOpen(false)}
           activeUsers={activeUsers}
-          currentUserId={currentUser.id}
+          currentUserId={currentUser?.id}
         />
       </div>
     </div>

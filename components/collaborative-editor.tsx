@@ -100,7 +100,7 @@ export function CollaborativeEditor({
   onDownload,
   onGenerateAI,
   activeUsers,
-  websocketUrl = "ws://localhost:1234", // Default WebSocket URL
+  websocketUrl = "ws://localhost:1234",
 }: CollaborativeEditorProps) {
   const [content, setContent] = useState("")
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(ConnectionStatus.CONNECTING)

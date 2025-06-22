@@ -7,8 +7,6 @@ export default function RootPage() {
   const router = useRouter()
 
   useEffect(() => {
-    // Check if user is authenticated (in a real app)
-    // For demo purposes, redirect to editor
     router.push("/editor")
   }, [router])
 

@@ -108,8 +108,7 @@ export default function HomePage() {
             AI-Powered Document Editor
           </Badge>
           <h1 className="text-4xl sm:text-6xl font-bold mb-6">
-            Create, Collaborate, and
-            <span className="text-blue-600 block">Generate with AI</span>
+            Create, Collaborate
           </h1>
           <p className="text-xl text-muted-foreground mb-8 max-w-3xl mx-auto">
             The modern document editor that combines powerful collaboration tools with AI content generation. Write

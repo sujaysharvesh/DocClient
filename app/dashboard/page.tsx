@@ -118,6 +118,16 @@ export default function EditorPage() {
     }
   };
 
+  const AuthToken = async (): Promise<string> => {
+    try {
+      const token = await localStorage.getItem("authToken");
+      return token || "";
+    } catch (err) {
+      console.error("Error getting Auth token:", err);
+      return "";
+    }
+  }
+
   const fetchCurrentUser = async (): Promise<User | null> => {
     try {
       const csrfToken = await getCsrfToken();
@@ -234,11 +244,13 @@ export default function EditorPage() {
   const getDocumentContent = async (documentId: String): Promise<string> => {
     try {
       const xsrfToken = await getCsrfToken();
+      const token = await localStorage.getItem("authToken");
       const response = await axios.get<ApiResponse<{ content: string }>>(
         `${baseUrl}/api/v1/document/${documentId}`, { 
           headers: {
             "Content-Type": "application/json",
             "X-XSRF-TOKEN": xsrfToken,
+            "Authorization": `Bearer ${token}`,
           },
           withCredentials: true,
         });
@@ -259,6 +271,34 @@ export default function EditorPage() {
       }
       return "";
     }
+  };
+
+  const createNewDocument = async() => {
+    if (!newDocTitle.trim()) return;
+
+    const xsrfToken = await getCsrfToken();
+    const token = await AuthToken();
+    const response = await axios.post(
+      `${baseUrl}/api/v1/document`,
+      {
+        title: newDocTitle, 
+      },
+      {
+        headers: {
+          "content-Type": "application/json",
+          "X-XSRF-TOKEN": xsrfToken,
+        },
+        withCredentials: true,
+      }
+      );
+
+      const responseData = response.data;
+
+
+
+    setDocuments((prev) => [responseData, ...prev]);
+    setCurrentDocument(responseData.documentId);
+    setNewDocTitle("");
   };
   // Load documents
   useEffect(() => {
@@ -318,19 +358,6 @@ export default function EditorPage() {
     loadDocumentContent();
   }, [currentDocument]);
 
-  const createNewDocument = () => {
-    if (!newDocTitle.trim()) return;
-
-    const newDoc: Document = {
-      id: `doc-${Date.now()}`,
-      title: newDocTitle,
-      lastModified: new Date().toISOString(),
-    };
-
-    setDocuments((prev) => [newDoc, ...prev]);
-    setCurrentDocument(newDoc.id);
-    setNewDocTitle("");
-  };
 
   const handleAIGenerate = (content: string) => {
     if (currentDocument) {

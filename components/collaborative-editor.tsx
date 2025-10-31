@@ -6,6 +6,9 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
+import Document from '@tiptap/extension-document'
+import Paragraph from '@tiptap/extension-paragraph'
+import Text from '@tiptap/extension-text'
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import TextAlign from "@tiptap/extension-text-align";
 import Underline from "@tiptap/extension-underline";
@@ -120,11 +123,7 @@ export function CollaborativeEditor({
   // Yjs document and provider refs
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
-  // Add undo manager ref
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
-
-  // Add a ref to track editor initialization
-  const editorInitializedRef = useRef<string | undefined>(undefined);
 
   // Memoize current user values to prevent unnecessary re-renders
   const currentUserId = useMemo(() => currentUser.id, [currentUser.id]);
@@ -134,133 +133,153 @@ export function CollaborativeEditor({
 
   // Initialize Yjs document and WebSocket provider
   useEffect(() => {
-    const initKey = `${documentId}-${currentUserId}`;
-    if (editorInitializedRef.current === initKey) return;
+    console.log(`Initializing collaboration for document: ${documentId}`);
 
     // Clean up existing connections first
     if (providerRef.current) {
+      console.log("Cleaning up existing provider");
       providerRef.current.disconnect();
       providerRef.current.destroy();
       providerRef.current = null;
     }
     
     if (ydocRef.current) {
+      console.log("Cleaning up existing ydoc");
       ydocRef.current.destroy();
       ydocRef.current = null;
     }
 
-    // Wait a tick before creating new instances to ensure cleanup is complete
-    const timer = setTimeout(() => {
-      // Create new Yjs document
-      const ydoc = new Y.Doc();
-      ydocRef.current = ydoc;
+    if (undoManagerRef.current) {
+      undoManagerRef.current.destroy();
+      undoManagerRef.current = null;
+    }
 
-      // Use a unique field name instead of 'default' to avoid conflicts
-      const fieldName = `document-${documentId}`;
-      const yText = ydoc.getText(fieldName);
-      const undoManager = new Y.UndoManager(yText);
-      undoManagerRef.current = undoManager;
+    // Reset editor ready state
+    setIsEditorReady(false);
 
-      // Rest of initialization...
-      const params = new URLSearchParams({
-        userId: currentUserId,
-        userName: currentUserName,
-        userColor: encodeURIComponent(currentUserColor),
-      });
+    // Create new Yjs document
+    const ydoc = new Y.Doc();
+    ydocRef.current = ydoc;
+    console.log("Created new Y.Doc");
 
-      const wsUrl = `${websocketUrl}/ws/collaboration/${documentId}?${params.toString()}`;
-      const provider = new WebsocketProvider(wsUrl, documentId, ydoc, {
-        connect: false,
-        WebSocketPolyfill: WebSocket,
-        resyncInterval: 30000,
-        maxBackoffTime: 30000,
-        disableBc: false,
-      });
+    // Create undo manager for the shared text
+    const yText = ydoc.getText('default');
+    const undoManager = new Y.UndoManager(yText);
+    undoManagerRef.current = undoManager;
+    console.log("Created undo manager");
 
-      providerRef.current = provider;
-      editorInitializedRef.current = initKey;
+    // Build WebSocket URL with user parameters
+    const params = new URLSearchParams({
+      userId: currentUserId,
+      userName: currentUserName,
+      userColor: encodeURIComponent(currentUserColor),
+    });
 
-      // Set user metadata in awareness
-      provider.awareness.setLocalStateField("user", {
+    const wsUrl = `${websocketUrl}/ws/collaboration/${documentId}?${params.toString()}`;
+    console.log("WebSocket URL:", wsUrl);
+
+    // Create WebSocket provider
+    const provider = new WebsocketProvider(wsUrl, documentId, ydoc, {
+      connect: false,
+      WebSocketPolyfill: WebSocket,
+      resyncInterval: 30000,
+      maxBackoffTime: 30000,
+      disableBc: false,
+    });
+
+    providerRef.current = provider;
+    console.log("Created WebSocket provider");
+
+    // Set user metadata in awareness
+    provider.awareness.setLocalStateField("user", {
+      id: currentUserId,
+      name: currentUserName,
+      color: currentUserColor,
+      avatar: currentUserAvatar,
+    });
+
+    // Connection status handlers
+    provider.on("status", (event: { status: string }) => {
+      console.log("WebSocket status changed:", event.status);
+      switch (event.status) {
+        case "connecting":
+          setConnectionStatus(ConnectionStatus.CONNECTING);
+          break;
+        case "connected":
+          setConnectionStatus(ConnectionStatus.CONNECTED);
+          break;
+        case "disconnected":
+          setConnectionStatus(ConnectionStatus.DISCONNECTED);
+          break;
+        default:
+          setConnectionStatus(ConnectionStatus.ERROR);
+      }
+    });
+
+    // Handle connection events
+    provider.on("connection-close", (event: any) => {
+      console.log("WebSocket connection closed:", event);
+      setConnectionStatus(ConnectionStatus.DISCONNECTED);
+    });
+
+    provider.on("connection-error", (error: any) => {
+      console.error("WebSocket connection error:", error);
+      setConnectionStatus(ConnectionStatus.ERROR);
+    });
+
+    // Handle sync events - CRITICAL for editor readiness
+    provider.on("sync", (isSynced: boolean) => {
+      console.log("Document sync status changed:", isSynced);
+      if (isSynced) {
+        setConnectionStatus(ConnectionStatus.CONNECTED);
+        // Delay setting editor ready to ensure sync is complete
+        setTimeout(() => {
+          console.log("Setting editor ready to true");
+          setIsEditorReady(true);
+        }, 100);
+      }
+    });
+
+    // Handle awareness updates (other users)
+    provider.awareness.on("change", () => {
+      const states = Array.from(provider.awareness.getStates().entries());
+      const users: User[] = states
+        .filter(
+          ([clientId, state]) =>
+            state.user && clientId !== provider.awareness.clientID
+        )
+        .map(([clientId, state]) => ({
+          id: state.user.id || clientId.toString(),
+          name: state.user.name || `User ${clientId}`,
+          color: state.user.color || "#000000",
+          avatar: state.user.avatar || state.user.name?.[0] || "U",
+        }));
+
+      setOnlineUsers([{
         id: currentUserId,
         name: currentUserName,
         color: currentUserColor,
-        avatar: currentUserAvatar,
+        avatar: currentUserAvatar
+      }, ...users]);
+      console.log("Online users updated:", users.length + 1);
+    });
+
+    // Add Yjs document change listener for debugging
+    yText.observe((event) => {
+      console.log("Yjs text changed:", {
+        length: yText.length,
+        content: yText.toString().substring(0, 100) + (yText.length > 100 ? '...' : ''),
+        delta: event.delta
       });
+    });
 
-      // Connection status handlers
-      provider.on("status", (event: { status: string }) => {
-        console.log("WebSocket status:", event.status);
-        switch (event.status) {
-          case "connecting":
-            setConnectionStatus(ConnectionStatus.CONNECTING);
-            break;
-          case "connected":
-            setConnectionStatus(ConnectionStatus.CONNECTED);
-            break;
-          case "disconnected":
-            setConnectionStatus(ConnectionStatus.DISCONNECTED);
-            break;
-          default:
-            setConnectionStatus(ConnectionStatus.ERROR);
-        }
-      });
-
-      // Handle connection events
-      provider.on("connection-close", (event: any) => {
-        console.log("WebSocket connection closed:", event);
-        setConnectionStatus(ConnectionStatus.DISCONNECTED);
-      });
-
-      provider.on("connection-error", (error: any) => {
-        console.error("WebSocket connection error:", error);
-        setConnectionStatus(ConnectionStatus.ERROR);
-      });
-
-      // Handle sync events
-      provider.on("sync", (isSynced: boolean) => {
-        console.log("Document synced:", isSynced);
-        if (isSynced) {
-          setConnectionStatus(ConnectionStatus.CONNECTED);
-          setIsEditorReady(true);
-        }
-      });
-
-      // Handle awareness updates (other users)
-      provider.awareness.on("change", () => {
-        const states = Array.from(provider.awareness.getStates().entries());
-        const users: User[] = states
-          .filter(
-            ([clientId, state]) =>
-              state.user && clientId !== provider.awareness.clientID
-          )
-          .map(([clientId, state]) => ({
-            id: state.user.id || clientId.toString(),
-            name: state.user.name || `User ${clientId}`,
-            color: state.user.color || "#000000",
-            avatar: state.user.avatar || state.user.name?.[0] || "U",
-          }));
-
-        setOnlineUsers([{
-          id: currentUserId,
-          name: currentUserName,
-          color: currentUserColor,
-          avatar: currentUserAvatar
-        }, ...users]);
-        console.log("Online users updated:", users.length + 1);
-      });
-
-      // Start connection after setup
-      setTimeout(() => {
-        console.log("Starting WebSocket connection...");
-        provider.connect();
-      }, 100);
-
-    }, 0);
+    // Start connection
+    console.log("Starting WebSocket connection...");
+    provider.connect();
 
     // Cleanup on unmount
     return () => {
-      clearTimeout(timer);
+      console.log("Cleaning up collaboration effect");
       if (providerRef.current) {
         providerRef.current.disconnect();
         providerRef.current.destroy();
@@ -268,18 +287,28 @@ export function CollaborativeEditor({
       if (ydocRef.current) {
         ydocRef.current.destroy();
       }
-      undoManagerRef.current = null;
-      editorInitializedRef.current = undefined;
+      if (undoManagerRef.current) {
+        undoManagerRef.current.destroy();
+        undoManagerRef.current = null;
+      }
     };
   }, [documentId, currentUserId, currentUserName, currentUserColor, currentUserAvatar, websocketUrl]);
-  
 
+  // Create extensions with proper dependency tracking
   const extensions = useMemo(() => {
+    console.log("Creating editor extensions, isEditorReady:", isEditorReady);
+    
     const baseExtensions: any[] = [
       StarterKit.configure({ 
         codeBlock: false, 
-        history: false // Disable history since we're using Yjs collaboration
+        history: false, // Disable built-in history since we're using Yjs undo manager
+        document: false, // We'll use our own document extension
+        paragraph: false, // We'll use our own paragraph extension  
+        text: false, // We'll use our own text extension
       }),
+      Document,
+      Paragraph,
+      Text,
       Placeholder.configure({ placeholder: "Start typing your document..." }),
       Image.configure({ HTMLAttributes: { class: "max-w-full h-auto rounded-lg" } }),
       CodeBlockLowlight.configure({ lowlight, defaultLanguage: "javascript" }),
@@ -289,12 +318,14 @@ export function CollaborativeEditor({
       Color,
       Highlight.configure({ multicolor: true }),
     ];
-
+    
+    // Only add collaboration extensions when everything is ready
     if (ydocRef.current && providerRef.current && isEditorReady) {
+      console.log("Adding collaboration extensions");
       baseExtensions.push(
         Collaboration.configure({ 
           document: ydocRef.current,
-          field: 'default', // Use default field for document content
+          field: 'default',
         }),
         CollaborationCursor.configure({
           provider: providerRef.current,
@@ -304,17 +335,22 @@ export function CollaborativeEditor({
           },
         })
       );
+    } else {
+      console.log("Collaboration not ready yet:", {
+        hasYdoc: !!ydocRef.current,
+        hasProvider: !!providerRef.current,
+        isEditorReady
+      });
     }
 
     return baseExtensions;
   }, [currentUserName, currentUserColor, isEditorReady]);
-
+  
   const editor = useEditor({
     extensions,
     editable: true,
     onUpdate: ({ editor }) => {
-      const html = editor.getHTML();
-      console.log("Editor content updated, length:", html.length);
+      console.log("Editor content updated");
       
       // Update awareness with last edit timestamp
       if (providerRef.current) {
@@ -327,21 +363,33 @@ export function CollaborativeEditor({
     onCreate: ({ editor }) => {
       console.log("Editor created successfully");
       
-      // If we have a Yjs document, check if there's existing content
-      if (ydocRef.current) {
-        const yText = ydocRef.current.getText('default');
-        const existingContent = yText.toString();
-        
-        if (existingContent && existingContent.length > 0) {
-          console.log("Found existing content in Yjs document:", existingContent.substring(0, 100) + "...");
-        } else {
-          console.log("No existing content found in Yjs document");
+      // Force a content check after editor creation
+      setTimeout(() => {
+        if (ydocRef.current) {
+          const yText = ydocRef.current.getText('default');
+          const existingContent = yText.toString();
+          
+          console.log("Checking for existing content:", {
+            yTextLength: yText.length,
+            content: existingContent.substring(0, 200),
+            editorHTML: editor.getHTML()
+          });
+          
+          // If there's content in Yjs but not in editor, try to sync
+          if (existingContent && existingContent.length > 0 && editor.getHTML() === '<p></p>') {
+            console.log("Found desync, attempting to refresh editor content");
+            // Force editor to re-read from Yjs
+            editor.commands.focus();
+          }
         }
-      }
+      }, 500);
     },
+    onDestroy: () => {
+      console.log("Editor destroyed");
+    }
   }, [extensions]);
 
-  // Editor event logging
+  // Editor event logging and awareness updates
   useEffect(() => {
     if (!editor) return;
 
@@ -394,30 +442,55 @@ export function CollaborativeEditor({
     }
   }, []);
 
-  // Debug function
+  // Enhanced debug function
   const debugContent = useCallback(() => {
     if (editor && ydocRef.current) {
-      console.group("Editor Debug Info");
+      console.group("=== COLLABORATIVE EDITOR DEBUG ===");
+      
+      // Editor state
       console.log("Editor HTML:", editor.getHTML());
-      console.log("Editor JSON:", editor.getJSON());
+      console.log("Editor JSON:", JSON.stringify(editor.getJSON(), null, 2));
+      console.log("Editor is editable:", editor.isEditable);
+      console.log("Editor is focused:", editor.isFocused);
+      
+      // Connection state
       console.log("Connection Status:", connectionStatus);
+      console.log("Editor Ready:", isEditorReady);
       console.log("Online Users:", onlineUsers.length);
       
-      // Debug Yjs document content
+      // Yjs document state
       const yText = ydocRef.current.getText('default');
       console.log("Yjs Text Content:", yText.toString());
       console.log("Yjs Text Length:", yText.length);
-      console.log("Yjs Document State:", ydocRef.current.toJSON());
+      console.log("Yjs Document clientID:", ydocRef.current.clientID);
       
-      // Debug provider state
+      // Provider state
       if (providerRef.current) {
-        console.log("Provider Status:", providerRef.current.wsconnected ? "Connected" : "Disconnected");
-        console.log("Provider Synced:", providerRef.current.synced);
+        console.log("Provider connected:", providerRef.current.wsconnected);
+        console.log("Provider synced:", providerRef.current.synced);
+        console.log("Provider URL:", providerRef.current.url);
+        console.log("Awareness states:", providerRef.current.awareness.getStates().size);
       }
+      
+      // Extension state
+      console.log("Collaboration extension active:", editor.extensionManager.extensions.find(ext => ext.name === 'collaboration'));
       
       console.groupEnd();
     }
-  }, [editor, connectionStatus, onlineUsers]);
+  }, [editor, connectionStatus, onlineUsers, isEditorReady]);
+
+  // Force sync function for troubleshooting
+  const forceSync = useCallback(() => {
+    if (providerRef.current && ydocRef.current) {
+      console.log("Forcing synchronization...");
+      
+      // Disconnect and reconnect
+      providerRef.current.disconnect();
+      setTimeout(() => {
+        providerRef.current?.connect();
+      }, 100);
+    }
+  }, []);
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -470,13 +543,16 @@ export function CollaborativeEditor({
         <p className="text-sm text-muted-foreground mt-2">
           Connection Status: {getConnectionText()}
         </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Editor Ready: {isEditorReady ? "Yes" : "No"}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="w-full max-w-5xl mx-auto">
-      {/* Connection Status Bar */}
+      {/* Enhanced Connection Status Bar */}
       <div className="mb-2 flex items-center justify-between text-sm">
         <div className="flex items-center gap-2">
           {getConnectionIcon()}
@@ -491,15 +567,23 @@ export function CollaborativeEditor({
           >
             {getConnectionText()}
           </span>
+          <span className="text-muted-foreground">
+            | Ready: {isEditorReady ? "✓" : "✗"}
+          </span>
           {connectionStatus === ConnectionStatus.DISCONNECTED && (
             <Button variant="outline" size="sm" onClick={handleReconnect}>
               Reconnect
             </Button>
           )}
         </div>
-        <Button variant="ghost" size="sm" onClick={debugContent}>
-          Debug Info
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={forceSync}>
+            Force Sync
+          </Button>
+          <Button variant="ghost" size="sm" onClick={debugContent}>
+            Debug Info
+          </Button>
+        </div>
       </div>
 
       {/* Enhanced Toolbar */}

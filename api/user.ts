@@ -32,7 +32,7 @@ const getInitials = (name: string): string => {
 
 
 
-export const fetchCurrentUser = async (): Promise<User | null> => {
+export const getCurrentUser = async (): Promise<User | null> => {
     try {
         const CsrfToken = await getCsrfToken();
         const response = await axios.get<ApiResponse<UserData>>(

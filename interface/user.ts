@@ -4,6 +4,8 @@ export interface User {
     color: string;
     avatar: string;
     isOwner: boolean;
+    lastSeen?: string;
+    
 }
 
 export interface UserData {

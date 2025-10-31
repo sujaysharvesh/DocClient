@@ -71,7 +71,7 @@ export default function LoginPage() {
       if (response.ok) {
         localStorage.setItem("authToken", result.token)
         console.log("Login successful, redirecting to editor")
-        router.push("/dashboard")
+        router.push("/documents")
       } else {
         // Fixed: use result instead of undefined 'data'
         setError(result.message || "Login failed")

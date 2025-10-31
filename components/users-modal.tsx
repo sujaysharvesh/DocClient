@@ -20,7 +20,7 @@ interface UsersModalProps {
   isOpen: boolean
   onClose: () => void
   activeUsers: User[]
-  currentUserId: string
+  currentUserId?: string
 }
 
 export function UsersModal({ isOpen, onClose, activeUsers, currentUserId }: UsersModalProps) {

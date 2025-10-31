@@ -1,4 +1,3 @@
-
 import axios from "axios";
 import { ApiResponse } from "@/interface/apiResponse";
 
@@ -8,7 +7,7 @@ const baseURL = process.env.NEXT_PUBLIC_BASE_URL;
 
 export const getCsrfToken = async (): Promise<string> => {
     try {
-        const response = await fetch(`${baseURL}/api/v1/auth/csrf`. {
+        const response = await fetch(`${baseURL}/api/v1/auth/csrf`, {
             method: "GET",
             credentials: "include",
         });

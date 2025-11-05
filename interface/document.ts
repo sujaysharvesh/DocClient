@@ -3,8 +3,9 @@
 export interface Document {
     documentId?: string;
     title?: string;
-    content?: Uint8Array;
-}
+    content?: string; 
+    updated_at?: string;
+  }
 
 export interface DocumentContent {
     content: Uint8Array; // represents raw binary data (like byte[])

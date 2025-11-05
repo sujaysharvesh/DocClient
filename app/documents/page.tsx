@@ -2,9 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { CollaborativeEditor } from "@/components/collaborative-editor";
-import { ShareModal } from "@/components/share-modal";
-import { UsersModal } from "@/components/users-modal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {

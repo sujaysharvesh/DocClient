@@ -1,27 +1,30 @@
 "use client";
 
-import type React from "react";
-
+import React, {
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  ChangeEvent,
+} from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
-import Document from '@tiptap/extension-document'
-import Paragraph from '@tiptap/extension-paragraph'
-import Text from '@tiptap/extension-text'
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import TextAlign from "@tiptap/extension-text-align";
-import Underline from "@tiptap/extension-underline";
-import TextStyle from "@tiptap/extension-text-style";
-import Color from "@tiptap/extension-color";
-import History from "@tiptap/extension-history";
 import * as Y from "yjs";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
 import Highlight from "@tiptap/extension-highlight";
+import Document from "@tiptap/extension-document"; // REQUIRED FOR Y.XmlFragment SCHEMA
+import Paragraph from "@tiptap/extension-paragraph"; // REQUIRED FOR Y.XmlFragment SCHEMA
+import Text from "@tiptap/extension-text"; // REQUIRED FOR Y.XmlFragment SCHEMA
+import TextStyle from "@tiptap/extension-text-style";
+import { Color } from "@tiptap/extension-color";
 import { WebsocketProvider } from "y-websocket";
 import { createLowlight } from "lowlight";
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -36,7 +39,7 @@ import { useTheme } from "next-themes";
 import {
   Bold,
   Italic,
-  UnderlineIcon,
+  Underline as UnderlineIcon,
   List,
   ListOrdered,
   Quote,
@@ -44,7 +47,7 @@ import {
   Redo,
   Share,
   Users,
-  ImageIcon,
+  Image as ImageIcon,
   Code,
   AlignLeft,
   AlignCenter,
@@ -58,23 +61,28 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
-
-// Configure lowlight for code highlighting
 import javascript from "highlight.js/lib/languages/javascript";
 import typescript from "highlight.js/lib/languages/typescript";
 import python from "highlight.js/lib/languages/python";
 import css from "highlight.js/lib/languages/css";
 import html from "highlight.js/lib/languages/xml";
+import { getUserDocument } from "@/api/document";
 
-// Create lowlight instance
+// Setup code highlighting
 const lowlight = createLowlight();
-
-// Register languages
 lowlight.register("javascript", javascript);
 lowlight.register("typescript", typescript);
 lowlight.register("python", python);
 lowlight.register("css", css);
 lowlight.register("html", html);
+
+// --- Mock getUserDocument (Kept for compilation safety) ---
+interface DocumentData {
+  documentId: string;
+  title: string;
+  content: Uint8Array | null;
+  updated_at: string;
+}
 
 interface User {
   id: string;
@@ -94,7 +102,6 @@ interface CollaborativeEditorProps {
   websocketUrl?: string;
 }
 
-// WebSocket connection status
 enum ConnectionStatus {
   CONNECTING = "connecting",
   CONNECTED = "connected",
@@ -112,387 +119,313 @@ export function CollaborativeEditor({
   activeUsers,
   websocketUrl = "ws://localhost:4003",
 }: CollaborativeEditorProps) {
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
+  const [connectionStatus, setConnectionStatus] = useState(
     ConnectionStatus.CONNECTING
   );
-  const [onlineUsers, setOnlineUsers] = useState<User[]>([currentUser]);
+  // FIX 2a: Initialize onlineUsers to an empty array. Awareness will populate it.
+  const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [isEditorReady, setIsEditorReady] = useState(false);
+  const [yjsInitialized, setYjsInitialized] = useState(false);
   const { theme, setTheme } = useTheme();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Yjs document and provider refs
+  // Yjs - use refs to prevent recreation
   const ydocRef = useRef<Y.Doc | null>(null);
   const providerRef = useRef<WebsocketProvider | null>(null);
   const undoManagerRef = useRef<Y.UndoManager | null>(null);
+  const initializingRef = useRef<boolean>(false);
 
-  // Memoize current user values to prevent unnecessary re-renders
+  // Memo current user props
   const currentUserId = useMemo(() => currentUser.id, [currentUser.id]);
   const currentUserName = useMemo(() => currentUser.name, [currentUser.name]);
-  const currentUserColor = useMemo(() => currentUser.color, [currentUser.color]);
-  const currentUserAvatar = useMemo(() => currentUser.avatar, [currentUser.avatar]);
+  const currentUserColor = useMemo(
+    () => currentUser.color,
+    [currentUser.color]
+  );
+  const currentUserAvatar = useMemo(
+    () => currentUser.avatar,
+    [currentUser.avatar]
+  );
 
-  // Initialize Yjs document and WebSocket provider
-  useEffect(() => {
-    console.log(`Initializing collaboration for document: ${documentId}`);
+  // WebSocket provider initialization
+  const initializeWebSocketProvider = useCallback(async (ydoc: Y.Doc) =>  {
 
-    // Clean up existing connections first
-    if (providerRef.current) {
-      console.log("Cleaning up existing provider");
-      providerRef.current.disconnect();
-      providerRef.current.destroy();
-      providerRef.current = null;
-    }
-    
-    if (ydocRef.current) {
-      console.log("Cleaning up existing ydoc");
-      ydocRef.current.destroy();
-      ydocRef.current = null;
-    }
+      const doc = await getUserDocument(documentId);
 
-    if (undoManagerRef.current) {
-      undoManagerRef.current.destroy();
-      undoManagerRef.current = null;
-    }
+      ydocRef.current = ydoc;
+      // This is where the initial data is loaded into the Y.Doc
+      Y.applyUpdate(ydoc, doc);
+      console.log("Yjs content update applied successfully.");
 
-    // Reset editor ready state
-    setIsEditorReady(false);
-
-    // Create new Yjs document
-    const ydoc = new Y.Doc();
-    ydocRef.current = ydoc;
-    console.log("Created new Y.Doc");
-
-    // Create undo manager for the shared text
-    const yText = ydoc.getText('default');
-    const undoManager = new Y.UndoManager(yText);
-    undoManagerRef.current = undoManager;
-    console.log("Created undo manager");
-
-    // Build WebSocket URL with user parameters
-    const params = new URLSearchParams({
-      userId: currentUserId,
-      userName: currentUserName,
-      userColor: encodeURIComponent(currentUserColor),
-    });
-
-    const wsUrl = `${websocketUrl}/ws/collaboration/${documentId}?${params.toString()}`;
-    console.log("WebSocket URL:", wsUrl);
-
-    // Create WebSocket provider
-    const provider = new WebsocketProvider(wsUrl, documentId, ydoc, {
-      connect: false,
-      WebSocketPolyfill: WebSocket,
-      resyncInterval: 30000,
-      maxBackoffTime: 30000,
-      disableBc: false,
-    });
-
-    providerRef.current = provider;
-    console.log("Created WebSocket provider");
-
-    // Set user metadata in awareness
-    provider.awareness.setLocalStateField("user", {
-      id: currentUserId,
-      name: currentUserName,
-      color: currentUserColor,
-      avatar: currentUserAvatar,
-    });
-
-    // Connection status handlers
-    provider.on("status", (event: { status: string }) => {
-      console.log("WebSocket status changed:", event.status);
-      switch (event.status) {
-        case "connecting":
-          setConnectionStatus(ConnectionStatus.CONNECTING);
-          break;
-        case "connected":
-          setConnectionStatus(ConnectionStatus.CONNECTED);
-          break;
-        case "disconnected":
-          setConnectionStatus(ConnectionStatus.DISCONNECTED);
-          break;
-        default:
-          setConnectionStatus(ConnectionStatus.ERROR);
-      }
-    });
-
-    // Handle connection events
-    provider.on("connection-close", (event: any) => {
-      console.log("WebSocket connection closed:", event);
-      setConnectionStatus(ConnectionStatus.DISCONNECTED);
-    });
-
-    provider.on("connection-error", (error: any) => {
-      console.error("WebSocket connection error:", error);
-      setConnectionStatus(ConnectionStatus.ERROR);
-    });
-
-    // Handle sync events - CRITICAL for editor readiness
-    provider.on("sync", (isSynced: boolean) => {
-      console.log("Document sync status changed:", isSynced);
-      if (isSynced) {
-        setConnectionStatus(ConnectionStatus.CONNECTED);
-        // Delay setting editor ready to ensure sync is complete
-        setTimeout(() => {
-          console.log("Setting editor ready to true");
-          setIsEditorReady(true);
-        }, 100);
-      }
-    });
-
-    // Handle awareness updates (other users)
-    provider.awareness.on("change", () => {
-      const states = Array.from(provider.awareness.getStates().entries());
-      const users: User[] = states
-        .filter(
-          ([clientId, state]) =>
-            state.user && clientId !== provider.awareness.clientID
-        )
-        .map(([clientId, state]) => ({
-          id: state.user.id || clientId.toString(),
-          name: state.user.name || `User ${clientId}`,
-          color: state.user.color || "#000000",
-          avatar: state.user.avatar || state.user.name?.[0] || "U",
-        }));
-
-      setOnlineUsers([{
-        id: currentUserId,
-        name: currentUserName,
-        color: currentUserColor,
-        avatar: currentUserAvatar
-      }, ...users]);
-      console.log("Online users updated:", users.length + 1);
-    });
-
-    // Add Yjs document change listener for debugging
-    yText.observe((event) => {
-      console.log("Yjs text changed:", {
-        length: yText.length,
-        content: yText.toString().substring(0, 100) + (yText.length > 100 ? '...' : ''),
-        delta: event.delta
-      });
-    });
-
-    // Start connection
-    console.log("Starting WebSocket connection...");
-    provider.connect();
-
-    // Cleanup on unmount
-    return () => {
-      console.log("Cleaning up collaboration effect");
+      // Cleanup previous provider
       if (providerRef.current) {
         providerRef.current.disconnect();
         providerRef.current.destroy();
+        providerRef.current = null;
       }
-      if (ydocRef.current) {
-        ydocRef.current.destroy();
+
+      // Build params for awareness
+      const params = new URLSearchParams({
+        userId: currentUserId,
+        userName: currentUserName,
+        userColor: encodeURIComponent(currentUserColor),
+      });
+      const wsUrl = `${websocketUrl}/ws/collaboration/${documentId}?${params.toString()}`;
+
+      const provider = new WebsocketProvider(wsUrl, documentId, ydoc, {
+        connect: false,
+        WebSocketPolyfill: WebSocket,
+        resyncInterval: 30000,
+        maxBackoffTime: 30000,
+        disableBc: false,
+      });
+
+      providerRef.current = provider;
+
+      // Set awareness
+      provider.awareness.setLocalStateField("user", {
+        id: currentUserId,
+        name: currentUserName,
+        color: currentUserColor,
+        avatar: currentUserAvatar,
+      });
+
+      // Provider events
+      provider.on("status", ({ status }: { status: string }) => {
+        console.log("Provider status:", status);
+        setConnectionStatus(status as ConnectionStatus);
+      });
+
+      provider.on("connection-close", () => {
+        console.log("Connection closed");
+        setConnectionStatus(ConnectionStatus.DISCONNECTED);
+      });
+
+      provider.on("connection-error", (error: Error) => {
+        console.error("Connection error:", error);
+        setConnectionStatus(ConnectionStatus.ERROR);
+      });
+
+      provider.on("sync", (isSynced: boolean) => {
+        console.log("Provider synced:", isSynced);
+        if (isSynced) {
+          setConnectionStatus(ConnectionStatus.CONNECTED);
+          // Set ready after sync to prevent race conditions during initial render
+          setTimeout(() => setIsEditorReady(true), 100);
+        }
+      });
+
+      // Awareness updates
+      provider.awareness.on("change", () => {
+        const states = Array.from(provider.awareness.getStates().values());
+        const users: User[] = states
+          .filter((state: any) => state.user)
+          .map((state: any) => ({
+            id: state.user.id,
+            name: state.user.name,
+            color: state.user.color,
+            avatar: state.user.avatar,
+          }));
+
+        // Deduplicate users by ID
+        const uniqueUsers = Array.from(
+          new Map(users.map((user) => [user.id, user])).values()
+        );
+
+        // FIX 2b: Rely only on uniqueUsers from awareness, removing manual fallback
+        setOnlineUsers(uniqueUsers);
+      });
+
+      // Connect provider
+      provider.connect();
+    },
+    [
+      documentId,
+      websocketUrl,
+      currentUserId,
+      currentUserName,
+      currentUserColor,
+      currentUserAvatar,
+    ]
+  );
+
+  // Load document + initialize Yjs
+  useEffect(() => {
+    const loadDocumentAndInitialize = async () => {
+      // Prevent duplicate initialization
+      if (initializingRef.current || ydocRef.current) {
+        console.log("Already initializing or initialized, skipping...");
+        return;
       }
+
+      initializingRef.current = true;
+      console.log("Loading document:", documentId);
+      setIsEditorReady(false);
+      setYjsInitialized(false);
+
+      try {
+        const doc = await getUserDocument(documentId);
+        console.log("Document loaded:", doc);
+
+        const ydoc = new Y.Doc();
+        ydocRef.current = ydoc;
+
+        // --- FIX 1: Robust Content Loading ---
+        if (doc.content && doc.content.length > 0) {
+          console.log(
+            "Attempting to apply Yjs update, content length:",
+            doc.content.length
+          );
+          try {
+            // This is where the initial data is loaded into the Y.Doc
+            Y.applyUpdate(ydoc, new Uint8Array(doc.content));
+            console.log("Yjs content update applied successfully.");
+          } catch (applyError) {
+            // FIX 1a: Handle errors when applying the stored update (e.g., corruption)
+            console.error(
+              "Error applying stored Yjs update (Content may be corrupt/incompatible). Starting with fresh document:",
+              applyError
+            );
+            // If applying fails, the ydoc remains empty, which is a safe fallback.
+          }
+        }
+
+        // Ensure the fragment exists (Tiptap needs this to initialize)
+        // If content was applied, this just gets the existing fragment.
+        // If content failed or was empty, this creates a new, empty fragment named 'default'.
+        const yXmlFragment = ydoc.getXmlFragment("default");
+
+        // FIX 1b: Removed the manual yXmlFragment.insert(0, [defaultParagraph])
+        // as this can cause conflicts if Y.applyUpdate already created a fragment.
+        // Collaboration extension handles Tiptap's initial empty state via the Yjs-ProseMirror binding.
+
+        // Create UndoManager for the XML fragment
+        undoManagerRef.current = new Y.UndoManager(yXmlFragment);
+
+        // Initialize WebSocket provider
+        initializeWebSocketProvider(ydoc);
+
+        setYjsInitialized(true);
+        console.log("Yjs initialized successfully");
+      } catch (error) {
+        console.error("Fatal error during document load:", error);
+        // Fallback: create empty doc
+        const ydoc = new Y.Doc();
+        ydocRef.current = ydoc;
+        undoManagerRef.current = new Y.UndoManager(
+          ydoc.getXmlFragment("default")
+        );
+        initializeWebSocketProvider(ydoc);
+        setConnectionStatus(ConnectionStatus.ERROR);
+        setYjsInitialized(true);
+      } finally {
+        initializingRef.current = false;
+      }
+    };
+
+    loadDocumentAndInitialize();
+
+    return () => {
+      console.log("Cleaning up editor");
+      initializingRef.current = false;
+      // Cleanup in correct order
       if (undoManagerRef.current) {
         undoManagerRef.current.destroy();
         undoManagerRef.current = null;
       }
+      if (providerRef.current) {
+        providerRef.current.disconnect();
+        providerRef.current.destroy();
+        providerRef.current = null;
+      }
+      if (ydocRef.current) {
+        ydocRef.current.destroy();
+        ydocRef.current = null;
+      }
+      setYjsInitialized(false);
+      setIsEditorReady(false);
     };
-  }, [documentId, currentUserId, currentUserName, currentUserColor, currentUserAvatar, websocketUrl]);
+  }, [documentId, websocketUrl, currentUser, initializeWebSocketProvider]);
 
-  // Create extensions with proper dependency tracking
+  // Compose extensions - only create when Yjs is ready
   const extensions = useMemo(() => {
-    console.log("Creating editor extensions, isEditorReady:", isEditorReady);
-    
+    console.log("Creating editor extensions, yjsInitialized:", yjsInitialized);
+
     const baseExtensions: any[] = [
-      StarterKit.configure({ 
-        codeBlock: false, 
-        history: false, // Disable built-in history since we're using Yjs undo manager
-        document: false, // We'll use our own document extension
-        paragraph: false, // We'll use our own paragraph extension  
-        text: false, // We'll use our own text extension
-      }),
+      // 1. Core Schema Nodes (Must be explicitly defined for Y.XmlFragment)
       Document,
       Paragraph,
       Text,
+
+      // 2. Starter Kit (Disable conflicting nodes, especially those related to history/structure)
+      StarterKit.configure({
+        document: false,
+        paragraph: false,
+        text: false,
+        codeBlock: false,
+        history: false, // Disable built-in history since we're using Yjs undo manager
+      }),
+
+      // 3. Other Extensions
       Placeholder.configure({ placeholder: "Start typing your document..." }),
-      Image.configure({ HTMLAttributes: { class: "max-w-full h-auto rounded-lg" } }),
+      Image.configure({
+        HTMLAttributes: { class: "max-w-full h-auto rounded-lg" },
+      }),
       CodeBlockLowlight.configure({ lowlight, defaultLanguage: "javascript" }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
-      Underline,
       TextStyle,
       Color,
       Highlight.configure({ multicolor: true }),
     ];
-    
-    // Only add collaboration extensions when everything is ready
-    if (ydocRef.current && providerRef.current && isEditorReady) {
+
+    // 4. Collaboration Extensions (Conditional)
+    if (yjsInitialized && ydocRef.current && providerRef.current) {
       console.log("Adding collaboration extensions");
       baseExtensions.push(
-        Collaboration.configure({ 
+        Collaboration.configure({
           document: ydocRef.current,
-          field: 'default',
+          field: "default", // Correctly maps to ydoc.getXmlFragment("default")
         }),
         CollaborationCursor.configure({
           provider: providerRef.current,
-          user: { 
-            name: currentUserName, 
-            color: currentUserColor 
+          user: {
+            name: currentUserName,
+            color: currentUserColor,
           },
         })
       );
     } else {
-      console.log("Collaboration not ready yet:", {
-        hasYdoc: !!ydocRef.current,
-        hasProvider: !!providerRef.current,
-        isEditorReady
-      });
+      console.log("Collaboration not ready yet. Skipping.");
     }
 
     return baseExtensions;
-  }, [currentUserName, currentUserColor, isEditorReady]);
-  
-  const editor = useEditor({
-    extensions,
-    editable: true,
-    onUpdate: ({ editor }) => {
-      console.log("Editor content updated");
-      
-      // Update awareness with last edit timestamp
-      if (providerRef.current) {
-        providerRef.current.awareness.setLocalStateField(
-          "lastEdit",
-          Date.now()
-        );
-      }
-    },
-    onCreate: ({ editor }) => {
-      console.log("Editor created successfully");
-      
-      // Force a content check after editor creation
-      setTimeout(() => {
-        if (ydocRef.current) {
-          const yText = ydocRef.current.getText('default');
-          const existingContent = yText.toString();
-          
-          console.log("Checking for existing content:", {
-            yTextLength: yText.length,
-            content: existingContent.substring(0, 200),
-            editorHTML: editor.getHTML()
-          });
-          
-          // If there's content in Yjs but not in editor, try to sync
-          if (existingContent && existingContent.length > 0 && editor.getHTML() === '<p></p>') {
-            console.log("Found desync, attempting to refresh editor content");
-            // Force editor to re-read from Yjs
-            editor.commands.focus();
-          }
+  }, [currentUserName, currentUserColor, yjsInitialized]);
+
+  const editor = useEditor(
+    {
+      extensions,
+      editable: true,
+      immediatelyRender: false,
+      onUpdate: ({ editor }) => {
+        if (providerRef.current) {
+          providerRef.current.awareness.setLocalStateField(
+            "lastEdit",
+            Date.now()
+          );
         }
-      }, 500);
+      },
+      onCreate: ({ editor }) => {
+        console.log("Editor created successfully");
+      },
+      onDestroy: () => {
+        console.log("Editor destroyed");
+      },
     },
-    onDestroy: () => {
-      console.log("Editor destroyed");
-    }
-  }, [extensions]);
+    [extensions]
+  );
 
-  // Editor event logging and awareness updates
-  useEffect(() => {
-    if (!editor) return;
-
-    const logEditorEvent = (event: string) => {
-      console.log(`Editor Event: ${event}`, {
-        time: new Date().toISOString(),
-        documentId,
-        userId: currentUserId,
-        connectionStatus,
-      });
-    };
-
-    editor.on("focus", () => {
-      logEditorEvent("focus");
-      if (providerRef.current) {
-        providerRef.current.awareness.setLocalStateField("focused", true);
-      }
-    });
-
-    editor.on("blur", () => {
-      logEditorEvent("blur");
-      if (providerRef.current) {
-        providerRef.current.awareness.setLocalStateField("focused", false);
-      }
-    });
-
-    editor.on("selectionUpdate", () => {
-      const selection = editor.state.selection;
-      if (providerRef.current) {
-        providerRef.current.awareness.setLocalStateField("cursor", {
-          from: selection.from,
-          to: selection.to,
-        });
-      }
-    });
-
-    return () => {
-      editor.off("focus");
-      editor.off("blur");
-      editor.off("selectionUpdate");
-    };
-  }, [editor, documentId, currentUserId, connectionStatus]);
-
-  // Reconnection logic
-  const handleReconnect = useCallback(() => {
-    if (providerRef.current) {
-      console.log("Attempting to reconnect...");
-      setConnectionStatus(ConnectionStatus.CONNECTING);
-      providerRef.current.connect();
-    }
-  }, []);
-
-  // Enhanced debug function
-  const debugContent = useCallback(() => {
-    if (editor && ydocRef.current) {
-      console.group("=== COLLABORATIVE EDITOR DEBUG ===");
-      
-      // Editor state
-      console.log("Editor HTML:", editor.getHTML());
-      console.log("Editor JSON:", JSON.stringify(editor.getJSON(), null, 2));
-      console.log("Editor is editable:", editor.isEditable);
-      console.log("Editor is focused:", editor.isFocused);
-      
-      // Connection state
-      console.log("Connection Status:", connectionStatus);
-      console.log("Editor Ready:", isEditorReady);
-      console.log("Online Users:", onlineUsers.length);
-      
-      // Yjs document state
-      const yText = ydocRef.current.getText('default');
-      console.log("Yjs Text Content:", yText.toString());
-      console.log("Yjs Text Length:", yText.length);
-      console.log("Yjs Document clientID:", ydocRef.current.clientID);
-      
-      // Provider state
-      if (providerRef.current) {
-        console.log("Provider connected:", providerRef.current.wsconnected);
-        console.log("Provider synced:", providerRef.current.synced);
-        console.log("Provider URL:", providerRef.current.url);
-        console.log("Awareness states:", providerRef.current.awareness.getStates().size);
-      }
-      
-      // Extension state
-      console.log("Collaboration extension active:", editor.extensionManager.extensions.find(ext => ext.name === 'collaboration'));
-      
-      console.groupEnd();
-    }
-  }, [editor, connectionStatus, onlineUsers, isEditorReady]);
-
-  // Force sync function for troubleshooting
-  const forceSync = useCallback(() => {
-    if (providerRef.current && ydocRef.current) {
-      console.log("Forcing synchronization...");
-      
-      // Disconnect and reconnect
-      providerRef.current.disconnect();
-      setTimeout(() => {
-        providerRef.current?.connect();
-      }, 100);
-    }
-  }, []);
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Image upload
+  const handleImageUpload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file && editor) {
       const reader = new FileReader();
@@ -503,12 +436,9 @@ export function CollaborativeEditor({
       reader.readAsDataURL(file);
     }
   };
+  const addImage = () => fileInputRef.current?.click();
 
-  const addImage = () => {
-    fileInputRef.current?.click();
-  };
-
-  // Connection status indicator
+  // Toolbar connection status
   const getConnectionIcon = () => {
     switch (connectionStatus) {
       case ConnectionStatus.CONNECTED:
@@ -535,6 +465,91 @@ export function CollaborativeEditor({
     }
   };
 
+  // Reconnect
+  const handleReconnect = useCallback(() => {
+    if (providerRef.current) {
+      setConnectionStatus(ConnectionStatus.CONNECTING);
+      providerRef.current.connect();
+    }
+  }, []);
+
+  // Debug
+  const debugContent = useCallback(() => {
+    if (editor && ydocRef.current) {
+      const yXmlFragment = ydocRef.current.getXmlFragment("default");
+      console.group("=== COLLABORATIVE EDITOR DEBUG ===");
+      console.log("Editor HTML:", editor.getHTML());
+      console.log("Editor JSON:", JSON.stringify(editor.getJSON(), null, 2));
+      console.log("Connection Status:", connectionStatus);
+      console.log("Online Users:", onlineUsers.length);
+      console.log("Yjs XML Fragment Length:", yXmlFragment.length);
+      console.log("Yjs Initialized:", yjsInitialized);
+      console.log("Editor Ready:", isEditorReady);
+      if (providerRef.current) {
+        console.log("Provider connected:", providerRef.current.wsconnected);
+        console.log("Provider synced:", providerRef.current.synced);
+        console.log("Provider URL:", providerRef.current.url);
+        console.log(
+          "Awareness states:",
+          providerRef.current.awareness.getStates().size
+        );
+      }
+      console.groupEnd();
+    }
+  }, [editor, connectionStatus, onlineUsers, yjsInitialized, isEditorReady]);
+
+  // Force sync
+  const forceSync = useCallback(() => {
+    if (providerRef.current && ydocRef.current) {
+      console.log("Force syncing...");
+      // Re-connect forces a sync
+      providerRef.current.disconnect();
+      setTimeout(() => providerRef.current?.connect(), 100);
+    }
+  }, []);
+
+  // Editor event logging & awareness
+  useEffect(() => {
+    if (!editor) return;
+
+    const logEditorEvent = (event: string) => {
+      const yXmlFragment = ydocRef.current?.getXmlFragment("default");
+      const contentLength = yXmlFragment?.length || 0;
+      console.log(`Editor Event: ${event}`, {
+        time: new Date().toISOString(),
+        documentId,
+        userId: currentUserId,
+        connectionStatus,
+        contentLength,
+      });
+    };
+
+    editor.on("focus", () => {
+      logEditorEvent("focus");
+      providerRef.current?.awareness.setLocalStateField("focused", true);
+    });
+
+    editor.on("blur", () => {
+      logEditorEvent("blur");
+      providerRef.current?.awareness.setLocalStateField("focused", false);
+    });
+
+    editor.on("selectionUpdate", () => {
+      const selection = editor.state.selection;
+      providerRef.current?.awareness.setLocalStateField("cursor", {
+        from: selection.from,
+        to: selection.to,
+      });
+    });
+
+    return () => {
+      editor.off("focus");
+      editor.off("blur");
+      editor.off("selectionUpdate");
+    };
+  }, [editor, documentId, currentUserId, connectionStatus]);
+
+  // Render loading state
   if (!editor) {
     return (
       <div className="w-full max-w-5xl mx-auto p-8 text-center">
@@ -542,6 +557,9 @@ export function CollaborativeEditor({
         <p>Loading collaborative editor...</p>
         <p className="text-sm text-muted-foreground mt-2">
           Connection Status: {getConnectionText()}
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Yjs Initialized: {yjsInitialized ? "Yes" : "No"}
         </p>
         <p className="text-sm text-muted-foreground mt-1">
           Editor Ready: {isEditorReady ? "Yes" : "No"}
@@ -568,7 +586,8 @@ export function CollaborativeEditor({
             {getConnectionText()}
           </span>
           <span className="text-muted-foreground">
-            | Ready: {isEditorReady ? "✓" : "✗"}
+            | Yjs: {yjsInitialized ? "✓" : "✗"} | Ready:{" "}
+            {isEditorReady ? "✓" : "✗"}
           </span>
           {connectionStatus === ConnectionStatus.DISCONNECTED && (
             <Button variant="outline" size="sm" onClick={handleReconnect}>
@@ -850,11 +869,10 @@ export function CollaborativeEditor({
               key={user.id}
               className="w-8 h-8 rounded-full border-2 border-white dark:border-gray-800 flex items-center justify-center text-white text-xs font-medium"
               style={{ backgroundColor: user.color }}
-              title={`${user.name} ${
-                user.id === currentUserId ? "(You)" : ""
-              }`}
+              title={`${user.name} ${user.id === currentUserId ? "(You)" : ""}`}
             >
-              {user.avatar}
+              {/* Ensure the avatar is the first letter of the name if no avatar field exists */}
+              {user.avatar || user.name.charAt(0).toUpperCase()}
             </div>
           ))}
         </div>

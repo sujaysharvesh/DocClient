@@ -10,7 +10,7 @@ import { AIGenerateModal } from "@/components/ai-generate-modal";
 import { Button } from "@/components/ui/button";
 import { User } from "@/interface/user";
 import { getCurrentUser } from "@/api/user";
-import { getDocumentContent, getUserDocument } from "@/api/document";
+import { getUserDocument } from "@/api/document";
 import { Document } from "@/interface/document";
 
 const getRandomColor = (): string => {
